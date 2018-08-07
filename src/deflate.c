@@ -50,6 +50,9 @@
 /* @(#) $Id$ */
 
 #include "deflate.h"
+#if (defined(__ARM_NEON__) || defined(__ARM_NEON))
+#include "contrib/arm/slide_hash_neon.h"
+#endif
 
 const char deflate_copyright[] =
    " deflate 1.2.11 Copyright 1995-2017 Jean-loup Gailly and Mark Adler ";
@@ -201,6 +204,10 @@ local const config configuration_table[10] = {
 local void slide_hash(s)
     deflate_state *s;
 {
+#if (defined(__ARM_NEON__) || defined(__ARM_NEON))
+    /* NEON based hash table rebase. */
+    return neon_slide_hash(s->head, s->prev, s->w_size, s->hash_size);
+#endif
     unsigned n, m;
     Posf *p;
     uInt wsize = s->w_size;
