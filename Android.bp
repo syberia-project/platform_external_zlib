@@ -1,3 +1,43 @@
+cflags_arm = [
+    // Since we're building for the platform, we claim to be Linux rather than
+    // Android so we use getauxval() directly instead of the NDK
+    // android_getCpuFeatures which isn't available to us anyway.
+    "-DARMV8_OS_LINUX",
+    // We no longer support non-Neon platform builds.
+    "-DADLER32_SIMD_NEON",
+    "-DINFLATE_CHUNK_SIMD_NEON",
+    // HWCAP_CRC32 is checked at runtime, so it's okay to turn crc32
+    // acceleration on for both 32- and 64-bit.
+    "-DCRC32_ARMV8_CRC32",
+    // Testing with zlib_bench shows -O3 is a win for ARM but a bit of a wash
+    // for x86, so match the BUILD file in only enabling this for ARM.
+    "-O3",
+]
+srcs_arm = [
+    "arm_features.c",
+    "simd_stub.c",
+]
+
+cflags_x86 = [
+    // Android's x86/x86-64 ABI includes SSE2 and SSSE3.
+    "-DADLER32_SIMD_SSSE3",
+    "-DINFLATE_CHUNK_SIMD_SSE2",
+    // TODO: ...but the host build system defaults don't match our official ABI.
+    "-mssse3",
+    // PCLMUL isn't in the ABI, but it won't actually be used unless CPUID
+    // reports that the processor really does have the instruction.
+    "-mpclmul",
+    "-DCRC32_SIMD_SSE42_PCLMUL",
+]
+srcs_x86 = [
+    "crc_folding.c",
+    "fill_window_sse.c",
+    "x86.c",
+]
+
+// This optimization is applicable to arm64 and x86-64.
+cflags_64 = ["-DINFLATE_CHUNK_READ_64LE"]
+
 cc_library {
     name: "libz",
 
@@ -13,69 +53,67 @@ cc_library {
     recovery_available: true,
 
     cflags: [
-        "-O3",
-        "-DUSE_MMAP",
+        // This would be an extra speed boost, but it would give different
+        // results between ARM and x86. We can reconsider this once we see how
+        // http://b/135038583 gets resolved, but for now play it safe.
+        // PA: We don't have to care about this so ignore it.
+        // "-DCHROMIUM_ZLIB_NO_CASTAGNOLI",
+        // We do support hidden visibility, so turn that on.
+        "-funroll-loops",
+        "-DHAVE_HIDDEN",
+        // We do support const, so turn that on.
         "-DZLIB_CONST",
+        "-DUNALIGNED_OK",
         "-Wall",
         "-Werror",
+        "-Wno-unused",
+        "-Wno-unused-parameter",
     ],
     stl: "none",
     export_include_dirs: ["."],
     srcs: [
-        "src/adler32.c",
-        "src/compress.c",
-        "src/crc32.c",
-        "src/deflate.c",
-        "src/gzclose.c",
-        "src/gzlib.c",
-        "src/gzread.c",
-        "src/gzwrite.c",
-        "src/infback.c",
-        "src/inftrees.c",
-        "src/trees.c",
-        "src/uncompr.c",
-        "src/zutil.c",
+        "adler32.c",
+        "adler32_simd.c",
+        "compress.c",
+        // See https://chromium-review.googlesource.com/749732.
+        "contrib/optimizations/inffast_chunk.c",
+        "contrib/optimizations/inflate.c",
+        "crc32.c",
+        "crc32_simd.c",
+        "deflate.c",
+        "gzclose.c",
+        "gzlib.c",
+        "gzread.c",
+        "gzwrite.c",
+        "infback.c",
+        "inftrees.c",
+        "inffast.c",
+        "trees.c",
+        "uncompr.c",
+        "zutil.c",
     ],
 
     arch: {
         arm: {
-            neon: {
-                // measurements show that the ARM version of ZLib is about x1.17 faster
-                // than the thumb one...
-                instruction_set: "arm",
+            // TODO: This is to work around b/24465209. Remove after root cause
+            // is fixed.
+            pack_relocations: false,
+            ldflags: ["-Wl,--hash-style=both"],
 
-                // TODO: This is to work around b/24465209. Remove after root cause is fixed
-                pack_relocations: false,
-                ldflags: ["-Wl,--hash-style=both"],
-                local_include_dirs: [
-                     "src/",
-                ],
-                srcs: [
-                    "src/contrib/arm/inflate.c",
-                    "src/contrib/arm/inffast.c",
-                ],
-            },
+            cflags: cflags_arm,
+            srcs: srcs_arm,
         },
         arm64: {
-            local_include_dirs: [
-                "src/",
-            ],
-            srcs: [
-                  "src/contrib/arm/inflate.c",
-                  "src/contrib/arm/inffast.c",
-            ],
+            cflags: cflags_arm + cflags_64,
+            srcs: srcs_arm,
         },
         x86: {
-            srcs: [
-                  "src/inflate.c",
-                  "src/inffast.c",
-            ],
+            cflags: cflags_x86,
+            srcs: srcs_x86,
         },
         x86_64: {
-            srcs: [
-                  "src/inflate.c",
-                  "src/inffast.c",
-            ],
+            cflags: cflags_x86 + cflags_64,
+            srcs: srcs_x86,
         },
     },
 
@@ -91,26 +129,24 @@ cc_library {
 
 cc_binary_host {
     name: "minigzip",
-    srcs: ["src/test/minigzip.c"],
-    cflags: ["-Wall", "-Werror"],
+    srcs: ["contrib/minigzip/minigzip.c"],
+    cflags: ["-Wall", "-Werror", "-DUSE_MMAP"],
     static_libs: ["libz"],
     stl: "none",
 }
 
 cc_binary {
-    name: "zlib_example",
-    srcs: ["src/test/example.c"],
+    name: "zlib_bench",
+    srcs: ["contrib/bench/zlib_bench.cc"],
     cflags: ["-Wall", "-Werror"],
+    host_supported: true,
     shared_libs: ["libz"],
-    stl: "none",
-}
-
-cc_binary_host {
-    name: "zlib_example_host",
-    srcs: ["src/test/example.c"],
-    cflags: ["-Wall", "-Werror"],
-    static_libs: ["libz"],
-    stl: "none",
+    // We build zlib_bench32 and zlib_bench64 so it's easy to test LP32.
+    compile_multilib: "both",
+    multilib: {
+        lib32: { suffix: "32", },
+        lib64: { suffix: "64", },
+    },
 }
 
 // This module is defined in development/ndk/Android.bp. Updating these headers
